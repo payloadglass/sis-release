@@ -48,6 +48,7 @@ Prebuilt targets (also available directly from [Releases](https://github.com/pay
 | Platform | Target | Archive |
 | --- | --- | --- |
 | Linux x86_64 | `x86_64-unknown-linux-gnu` | `.tar.gz` |
+| Linux arm64 | `aarch64-unknown-linux-gnu` | `.tar.gz` |
 | macOS (universal: Apple Silicon + Intel) | `universal-apple-darwin` | `.tar.gz` |
 | Windows x86_64 | `x86_64-pc-windows-msvc` | `.zip` |
 

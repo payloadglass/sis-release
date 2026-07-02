@@ -13,11 +13,14 @@ arch="$(uname -m)"
 
 case "$os" in
   Linux)
-    if [ "$arch" != "x86_64" ]; then
-      echo "Unsupported architecture: $arch" >&2
-      exit 1
-    fi
-    target="x86_64-unknown-linux-gnu"
+    case "$arch" in
+      x86_64 | amd64) target="x86_64-unknown-linux-gnu" ;;
+      aarch64 | arm64) target="aarch64-unknown-linux-gnu" ;;
+      *)
+        echo "Unsupported architecture: $arch" >&2
+        exit 1
+        ;;
+    esac
     ext="tar.gz"
     bin_name="sis"
     ;;
