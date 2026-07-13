@@ -106,23 +106,43 @@ a top-level file and a nested payload.
 | Windows shortcut | `.lnk` | `lnk:*` |
 | PE executable | `.exe`, `.dll`, `.scr` | `pe:*` |
 | ELF executable | (no fixed extension) | `elf:*` |
+| Mach-O executable | (no fixed extension) | `pe:*` / `elf:*` family |
 | ISO / UDF image | `.iso` | `iso:*` |
-| Archive / ZIP / 7z / RAR | `.zip`, `.7z`, `.rar` | `arc:*` |
-| VBScript | `.vbs`, `.vbe` (embedded) | `vbs:*` |
-| CSS | `.css` (embedded) | `css:*` |
+| Archive / ZIP / 7z / RAR / TAR | `.zip`, `.7z`, `.rar`, `.tar` | `arc:*`, `zip:*`, `7z:*`, `rar:*` |
+| JavaScript | `.js` (standalone or embedded) | `js:*` |
+| VBA / VBScript | `.vbs`, `.vbe`, macro streams | `vba:*`, `vbs:*` |
+| PowerShell | `.ps1` | `ps1:*` |
+| Shell script | `.sh` | `sh:*` |
+| Python | `.py` | `py:*` |
+| Windows Script File | `.wsf` | `wsf:*` |
+| XML / SVG / CSS | `.xml`, `.svg`, `.css` | `xml:*`, `svg:*`, `css:*` |
+| Images | JPEG, PNG, GIF, BMP, TIFF, WebP, JP2, JBIG2 | `image:*` |
+| Fonts | embedded / standalone | `font:*` |
+| Flash / media | `.swf`, media streams | `swf:*` |
 
 Cross-format and structural findings (polyglots, magic-byte conflicts, format
 masquerade) surface under `file:*`; Unicode and homoglyph indicators under
 `unicode:*`.
 
-`sis` runs 60+ detectors producing 200+ distinct finding kinds across format and
-container structure, PDF internals, actions and triggers, JavaScript and
-VBScript (static + instrumented dynamic sandbox), Office macros and OLE, forms
-and XML, embedded/nested files, streams and filters, fonts, images, rich media,
-URIs and phishing, the passive render pipeline, crypto and signatures, content
-phishing, and AI-poisoning / prompt-injection channels. Findings are correlated
-into trigger/action/payload chains and composite scores that span format
-boundaries.
+Around 40 detector families declare **700+ distinct finding kinds** across format
+and container structure, PDF internals, actions and triggers, scripting
+(JavaScript, VBA/VBScript, PowerShell, shell, Python — static plus an
+instrumented dynamic sandbox), Office macros and OLE, forms and XML,
+embedded/nested files, streams and filters, fonts, images, QR and visual lures,
+rich media, URIs and phishing, the passive render pipeline, crypto and
+signatures, AI-poisoning / prompt-injection channels, and — verdict-inert and
+evidence-safe — **secrets and PII**. Findings are correlated into
+trigger/action/payload chains and composite scores that span format boundaries.
+
+## The five risk axes
+
+A file is not one number. Every artefact is read on five orthogonal axes:
+**hostility** (executes, exploits, fetches, evades), **deception** (manipulates a
+human), **AI-ingestion** (corrupts a model/RAG/agent workflow), **sensitivity**
+(exposure, indexing, retention, sharing would cause harm), and **provenance**
+(origin and custody). The security verdict is produced over hostility and
+deception evidence only — sensitivity, provenance, and AI-ingestion never feed
+the threat score.
 
 ## The five risk lenses
 
@@ -139,12 +159,18 @@ Every file is read for five consumers, because risk depends on who ingests it:
 | Command | Purpose |
 | --- | --- |
 | `sis scan` | Primary detector pipeline for one file or a batch of paths |
-| `sis query` | Forensic query interface over a parsed file |
+| `sis query` | Forensic query interface over a parsed file (incl. asset-path queries) |
 | `sis repl` | Interactive query REPL — parse once, query many |
 | `sis report` | Full report generation (markdown / JSON / YAML) |
 | `sis explain` | Detailed explanation for a specific finding ID |
+| `sis extract` | Hostile-aware, provenanced text extraction (safe text for RAG/search) |
 | `sis ingest-risk` | Classify a document's AI-ingestion risk; exit code encodes the label |
 | `sis sanitize` | CDR strip-and-report for active-content removal |
+| `sis verify-cdr` | Verify-rescan a sanitised derivative and report residual risk |
+| `sis cdr-gateway` | Batch CDR with release decisions and evidence reports |
+| `sis flow` | Typed capability orchestration — lint, simulate, run, explain-run |
+| `sis policy` | Policy bundle inspection and evaluation |
+| `sis shape` | Structural campaign hunting — group by structure, not hash |
 | `sis sandbox` | Dynamic sandbox evaluation for extracted dynamic assets |
 | `sis correlate` | Cross-input correlation of findings, chains, and IOCs |
 | `sis generate` | YARA rule generation and test-fixture mutation |
