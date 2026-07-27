@@ -124,7 +124,7 @@ Cross-format and structural findings (polyglots, magic-byte conflicts, format
 masquerade) surface under `file:*`; Unicode and homoglyph indicators under
 `unicode:*`.
 
-60+ detectors across ~25 analysis families declare **700+ distinct finding kinds**
+60+ detectors across ~25 analysis families declare **800+ distinct finding kinds**
 across format and container structure, PDF internals, actions and triggers, scripting
 (JavaScript, VBA/VBScript, PowerShell, shell, Python — static plus an
 instrumented dynamic sandbox), Office macros and OLE, forms and XML,
