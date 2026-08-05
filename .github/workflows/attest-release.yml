@@ -1,0 +1,71 @@
+# Route B — re-attest release archives in the PUBLIC mirror.
+#
+# DEPLOY THIS TO: payloadglass/sis-release  ->  .github/workflows/attest-release.yml
+# (It cannot live in the private michiel/sis: actions/attest-build-provenance stores the attestation in the
+#  repo it RUNS in, and that store must be PUBLIC to be verifiable by consumers. See deploy/mirror-attest/README.md.)
+#
+# What it does: when a release is published in the mirror (the michiel/sis release job creates it with a PAT,
+# which DOES trigger `release` events), download that release's archives and attest their provenance. The
+# attestation lands in payloadglass/sis-release's public store, so a consumer runs:
+#     gh attestation verify sis-<tag>-<target>.tar.gz --repo payloadglass/sis-release
+# and the sis-scan action verifies it with `verify-attestation: true` (attestation-mode: repo, the default).
+#
+# Trust semantics (be honest about this): the provenance predicate names THIS workflow as the builder, so it
+# attests "the public mirror published these exact bytes via this workflow" — publication provenance, not a
+# cryptographic tie to the private source commit. It is still Sigstore-signed and Rekor-logged. For
+# source-tied provenance instead, use Route A (a bundle published from the private build; the action's
+# attestation-mode: bundle path).
+
+name: attest-release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to (re-)attest, e.g. v0.6.6"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write       # Sigstore OIDC (keyless signing)
+  attestations: write   # persist provenance to THIS (public) repo's attestation store
+
+concurrency:
+  group: attest-release-${{ github.event.release.tag_name || github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          [ -n "${tag}" ] || { echo "::error::no release tag to attest"; exit 1; }
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Only the distributable archives are subjects; SHA256SUMS and any bundles are not.
+          gh release download "${{ steps.tag.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern '*.tar.gz' --pattern '*.zip' \
+            --dir dist
+          echo "Archives to attest:"; ls -l dist
+          # Fail loudly if the release carried no archives (misconfiguration, not a no-op).
+          shopt -s nullglob
+          set -- dist/*.tar.gz dist/*.zip
+          [ "$#" -gt 0 ] || { echo "::error::no *.tar.gz/*.zip assets found on ${{ steps.tag.outputs.tag }}"; exit 1; }
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*.tar.gz, dist/*.zip"
