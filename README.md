@@ -10,7 +10,7 @@ output — and it runs entirely on your machine. No account, no upload.
 
 > `sis` is short for *Smiley Is Suspicious* — the analysis engine behind PayloadGlass.
 
-**[payloadglass.com](https://payloadglass.com)** · **[Live in-browser demo](https://demo.payloadglass.com)** · **[Releases](https://github.com/payloadglass/sis-release/releases)**
+**[payloadglass.com](https://payloadglass.com)** · **[Investigation workbench](https://workbench.payloadglass.com)** · **[Releases](https://github.com/payloadglass/sis-release/releases)**
 
 A file submitted to `sis` is not assumed to be what its extension claims. Format
 is determined from content. Containers are unpacked and their contents analysed
@@ -226,9 +226,9 @@ sis update --include-prerelease
 PayloadGlass is a local-first trust layer for hostile documents, archives,
 files, and AI-bound content. The CLI is the complete local scanner; see
 **[payloadglass.com](https://payloadglass.com)** for the whole picture and the
-**[live in-browser demo](https://demo.payloadglass.com)**, where you can drop a
+**[investigation workbench](https://workbench.payloadglass.com)**, where you can drop a
 hostile file and watch it get analysed with zero bytes uploaded.
 
 - Website — https://payloadglass.com
-- Live demo — https://demo.payloadglass.com
+- Investigation workbench — https://workbench.payloadglass.com
 - Releases — https://github.com/payloadglass/sis-release/releases
