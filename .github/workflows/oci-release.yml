@@ -400,6 +400,7 @@ jobs:
           EXPECTED_DESCRIPTION: ${{ env.IMAGE_DESCRIPTION }}
           EXPECTED_SOURCE: https://github.com/${{ github.repository }}
           EXPECTED_LICENSES: ${{ env.IMAGE_LICENSES }}
+          EXPECTED_REVISION: ${{ github.sha }}
         run: |
           set -euo pipefail
           python3 <<'PY'
@@ -410,6 +411,7 @@ jobs:
           expected_description = os.environ["EXPECTED_DESCRIPTION"]
           expected_source = os.environ["EXPECTED_SOURCE"]
           expected_licenses = os.environ["EXPECTED_LICENSES"]
+          expected_revision = os.environ["EXPECTED_REVISION"]
 
           KEY = "org.opencontainers.image."
 
@@ -437,7 +439,7 @@ jobs:
                   KEY + "version": tag,
                   KEY + "source": expected_source,
                   KEY + "licenses": expected_licenses,
-                  KEY + "revision": None,   # a commit sha; no independent expected value exists
+                  KEY + "revision": expected_revision,
               }
 
 
@@ -532,6 +534,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: oci-evidence-${{ steps.cfg.outputs.tag }}
+          # `overwrite: true` because of the `always()` above, not despite it. Artifact names are
+          # scoped to the RUN, not the attempt, and the default is overwrite: false — so a failed
+          # attempt now uploads evidence, and "Re-run failed jobs" then fails with 409 Conflict on
+          # the upload. That would break exactly the fix-and-re-run flow `always()` exists to serve,
+          # and it would go red next to the metadata gate, reading as "the gate still fails".
+          overwrite: true
           path: |
             binary-digests.txt
             sis-sbom.spdx.json
