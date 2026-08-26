@@ -48,6 +48,7 @@ env:
   # Declared once and used TWICE — as a per-platform LABEL and as an index annotation. They are
   # different mechanisms reaching different readers, and a description that lived in only one of
   # them is exactly how this was wrong the first time round.
+  IMAGE_LICENSES: "NOASSERTION"
   IMAGE_DESCRIPTION: "SIS — multi-format document and container security analyser. Scans PDF, Office, archive and container formats for active content, obfuscation and AI-directed injection."
 
   # The runtime base, pinned by DIGEST so it cannot move under us.
@@ -209,6 +210,7 @@ jobs:
           ARG SIS_REVISION
           ARG SIS_DESCRIPTION
           ARG SIS_SOURCE
+          ARG SIS_LICENSES
 
           COPY ctx/${TARGETARCH}/sis /usr/local/bin/sis
 
@@ -223,7 +225,7 @@ jobs:
                 org.opencontainers.image.version="${SIS_VERSION}" \
                 org.opencontainers.image.revision="${SIS_REVISION}" \
                 org.opencontainers.image.source="${SIS_SOURCE}" \
-                org.opencontainers.image.licenses="NOASSERTION"
+                org.opencontainers.image.licenses="${SIS_LICENSES}"
 
           ENTRYPOINT ["/usr/local/bin/sis"]
           EOF
@@ -247,6 +249,7 @@ jobs:
             SIS_REVISION=${{ github.sha }}
             SIS_DESCRIPTION=${{ env.IMAGE_DESCRIPTION }}
             SIS_SOURCE=https://github.com/${{ github.repository }}
+            SIS_LICENSES=${{ env.IMAGE_LICENSES }}
           # A LABEL lands in each PLATFORM's config. GHCR's package page reads a multi-architecture
           # image's metadata from the INDEX, which has no config and therefore no labels — so the
           # first publish showed "No description provided" despite every platform config carrying
@@ -258,7 +261,7 @@ jobs:
             index:org.opencontainers.image.version=${{ steps.cfg.outputs.tag }}
             index:org.opencontainers.image.revision=${{ github.sha }}
             index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            index:org.opencontainers.image.licenses=NOASSERTION
+            index:org.opencontainers.image.licenses=${{ env.IMAGE_LICENSES }}
           outputs: ${{ steps.cfg.outputs.push == 'true' && 'type=image' || 'type=oci,dest=sis-oci.tar' }}
 
       # EXECUTED, not read off a manifest field. An arm64 manifest carrying the amd64 binary satisfies
@@ -281,6 +284,7 @@ jobs:
                 --build-arg "SIS_REVISION=${{ github.sha }}" \
                 --build-arg "SIS_DESCRIPTION=${IMAGE_DESCRIPTION}" \
                 --build-arg "SIS_SOURCE=https://github.com/${{ github.repository }}" \
+                --build-arg "SIS_LICENSES=${IMAGE_LICENSES}" \
                 -f Containerfile -t "sis-local:${arch}" .
               img="sis-local:${arch}"
             else
@@ -336,6 +340,36 @@ jobs:
             sha256sum sis-oci.tar || true
           fi
 
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.cfg.outputs.push == 'true' && format('{0}:{1}', env.IMAGE, steps.cfg.outputs.tag) || '' }}
+          path: ${{ steps.cfg.outputs.push == 'true' && '' || 'ctx' }}
+          format: spdx-json
+          output-file: sis-sbom.spdx.json
+          upload-artifact: false
+
+      # Subject is the TOP-LEVEL index digest, so one attestation covers the multi-architecture image
+      # rather than each platform manifest separately.
+      - name: Attest the image index
+        if: steps.cfg.outputs.push == 'true'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # ORDER MATTERS, and it is the reason this sits here rather than before the attestation.
+      #
+      # Everything from `Build multi-architecture image` onward runs AFTER the image is public. A
+      # failing step therefore cannot prevent publication — it can only stop the steps behind it. So
+      # a metadata gate placed before `Attest the image index` converts a blank description into a
+      # public image with NO PROVENANCE AT ALL, which is far worse than the cosmetic defect it
+      # catches. Every other post-push gate here guards a load-bearing claim (it runs, it is the
+      # right architecture, the bytes match the archive); this one guards a web page.
+      #
+      # Placed after the attestation, a metadata failure still leaves an attested image and a red
+      # run telling you to fix the metadata and re-push.
       # Metadata reaches consumers through TWO mechanisms, and this checks both, because each
       # can go blank without the other noticing:
       #
@@ -365,6 +399,7 @@ jobs:
           TAG: ${{ steps.cfg.outputs.tag }}
           EXPECTED_DESCRIPTION: ${{ env.IMAGE_DESCRIPTION }}
           EXPECTED_SOURCE: https://github.com/${{ github.repository }}
+          EXPECTED_LICENSES: ${{ env.IMAGE_LICENSES }}
         run: |
           set -euo pipefail
           python3 <<'PY'
@@ -374,6 +409,7 @@ jobs:
           image, tag = os.environ["IMAGE"], os.environ["TAG"]
           expected_description = os.environ["EXPECTED_DESCRIPTION"]
           expected_source = os.environ["EXPECTED_SOURCE"]
+          expected_licenses = os.environ["EXPECTED_LICENSES"]
 
           KEY = "org.opencontainers.image."
 
@@ -385,8 +421,8 @@ jobs:
                   KEY + "description": expected_description,
                   KEY + "version": tag,
                   KEY + "source": expected_source,
-                  KEY + "revision": None,   # a commit sha; presence and non-emptiness only
-                  KEY + "licenses": None,
+                  KEY + "licenses": expected_licenses,
+                  KEY + "revision": None,   # a commit sha; no independent expected value exists
               }
 
 
@@ -463,25 +499,6 @@ jobs:
 
           print(f"metadata complete on the index and all {len(platforms)} platforms")
           PY
-
-      - name: Generate SBOM
-        uses: anchore/sbom-action@v0
-        with:
-          image: ${{ steps.cfg.outputs.push == 'true' && format('{0}:{1}', env.IMAGE, steps.cfg.outputs.tag) || '' }}
-          path: ${{ steps.cfg.outputs.push == 'true' && '' || 'ctx' }}
-          format: spdx-json
-          output-file: sis-sbom.spdx.json
-          upload-artifact: false
-
-      # Subject is the TOP-LEVEL index digest, so one attestation covers the multi-architecture image
-      # rather than each platform manifest separately.
-      - name: Attest the image index
-        if: steps.cfg.outputs.push == 'true'
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
 
       - name: Upload evidence
         uses: actions/upload-artifact@v4
