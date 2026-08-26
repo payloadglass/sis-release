@@ -175,6 +175,9 @@ jobs:
       - name: Write Containerfile
         run: |
           set -euo pipefail
+          # `ARG BASE` deliberately has NO default. Buildx lints that (InvalidDefaultArgInFrom),
+          # but a default would be a second place the runtime base is declared, and a missing
+          # build-arg would then silently build on it instead of failing. Fail-closed beats quiet.
           cat > Containerfile <<'EOF'
           ARG BASE
           FROM ${BASE}
@@ -247,9 +250,6 @@ jobs:
             got="$(docker run --rm --platform "linux/${arch}" "${img}" --version)"
             echo "  ${got}"
             case "${got}" in *"${tag#v}"*) ;; *) echo "::error::${arch}: --version did not report ${tag}"; exit 1 ;; esac
-            # the machine actually in the layer
-            docker run --rm --platform "linux/${arch}" --entrypoint /bin/sh "${img}" -c \
-              'readelf -h /usr/local/bin/sis 2>/dev/null | sed -n "s/^  Machine: *//p"' || true
             # non-root
             uid="$(docker run --rm --platform "linux/${arch}" --entrypoint /bin/sh "${img}" -c 'id -u')"
             [ "${uid}" = "65532" ] || { echo "::error::${arch}: runs as uid ${uid}, expected 65532"; exit 1; }
