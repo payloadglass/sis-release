@@ -45,6 +45,11 @@ concurrency:
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/sis
 
+  # Declared once and used TWICE — as a per-platform LABEL and as an index annotation. They are
+  # different mechanisms reaching different readers, and a description that lived in only one of
+  # them is exactly how this was wrong the first time round.
+  IMAGE_DESCRIPTION: "SIS — multi-format document and container security analyser. Scans PDF, Office, archive and container formats for active content, obfuscation and AI-directed injection."
+
   # The runtime base, pinned by DIGEST so it cannot move under us.
   #
   # WHY TRIXIE AND NOT BOOKWORM. A GNU binary runs only on a glibc at least as new as the one it was
@@ -202,6 +207,7 @@ jobs:
           ARG TARGETARCH
           ARG SIS_VERSION
           ARG SIS_REVISION
+          ARG SIS_DESCRIPTION
 
           COPY ctx/${TARGETARCH}/sis /usr/local/bin/sis
 
@@ -212,7 +218,7 @@ jobs:
           WORKDIR /work
 
           LABEL org.opencontainers.image.title="sis" \
-                org.opencontainers.image.description="SIS multi-format document and container security analyser" \
+                org.opencontainers.image.description="${SIS_DESCRIPTION}" \
                 org.opencontainers.image.version="${SIS_VERSION}" \
                 org.opencontainers.image.revision="${SIS_REVISION}" \
                 org.opencontainers.image.source="https://github.com/payloadglass/sis-release" \
@@ -238,6 +244,19 @@ jobs:
             BASE=${{ env.RUNTIME_BASE }}
             SIS_VERSION=${{ steps.cfg.outputs.tag }}
             SIS_REVISION=${{ github.sha }}
+            SIS_DESCRIPTION=${{ env.IMAGE_DESCRIPTION }}
+          # A LABEL lands in each PLATFORM's config. GHCR's package page reads a multi-architecture
+          # image's metadata from the INDEX, which has no config and therefore no labels — so the
+          # first publish showed "No description provided" despite every platform config carrying
+          # one. Annotations are the index's equivalent, and `index:` is what puts them there rather
+          # than on a platform manifest.
+          annotations: |
+            index:org.opencontainers.image.title=sis
+            index:org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
+            index:org.opencontainers.image.version=${{ steps.cfg.outputs.tag }}
+            index:org.opencontainers.image.revision=${{ github.sha }}
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.licenses=NOASSERTION
           outputs: ${{ steps.cfg.outputs.push == 'true' && 'type=image' || 'type=oci,dest=sis-oci.tar' }}
 
       # EXECUTED, not read off a manifest field. An arm64 manifest carrying the amd64 binary satisfies
@@ -258,6 +277,7 @@ jobs:
                 --build-arg "BASE=${RUNTIME_BASE}" \
                 --build-arg "SIS_VERSION=${tag}" \
                 --build-arg "SIS_REVISION=${{ github.sha }}" \
+                --build-arg "SIS_DESCRIPTION=${IMAGE_DESCRIPTION}" \
                 -f Containerfile -t "sis-local:${arch}" .
               img="sis-local:${arch}"
             else
@@ -312,6 +332,30 @@ jobs:
             ls -l sis-oci.tar || true
             sha256sum sis-oci.tar || true
           fi
+
+      # Without this, the annotation fix has no gate. GHCR reported "No description provided" for a
+      # week's worth of work that DID set the label correctly — the failure was silent, visible only
+      # on a web page nobody diffs. buildx's `index:` prefix is the load-bearing detail, and a syntax
+      # change or a dropped prefix would put us straight back there with a green run.
+      - name: Index annotations reach the registry
+        if: steps.cfg.outputs.push == 'true'
+        run: |
+          set -euo pipefail
+          raw="$(docker buildx imagetools inspect "${IMAGE}:${{ steps.cfg.outputs.tag }}" --raw)"
+          missing=0
+          for key in title description version source; do
+            if ! printf '%s' "$raw" | grep -q "org.opencontainers.image.${key}"; then
+              echo "::error::the image INDEX carries no org.opencontainers.image.${key} annotation"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "  A LABEL lands in each platform's config; the index has no config, so GHCR shows"
+            echo "  'No description provided'. Annotations are the index's equivalent — check the"
+            echo "  \`index:\` prefix on the build-push-action \`annotations:\` input."
+            exit 1
+          fi
+          printf '%s' "$raw" | python3 -c 'import json,sys; a=json.load(sys.stdin).get("annotations") or {}; [print("  %s = %s" % (k, v)) for k, v in sorted(a.items())]'
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
