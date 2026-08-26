@@ -492,8 +492,17 @@ jobs:
           for key, value in sorted((index.get("annotations") or {}).items()):
               print(f"  {key} = {value}")
 
-          if not platforms:
-              failures.append("no runnable platform manifests were found to check")
+          # WHICH platforms, not how many. The step name claims "every platform", and a count claims
+          # nothing: in the dry-run path the execution gate rebuilds each architecture from the
+          # Containerfile rather than reading sis-oci.tar, so a single-platform tarball would satisfy
+          # it and this step would report "all 1 platforms" — true, and useless.
+          expected_platforms = {"linux/amd64", "linux/arm64"}
+          found_platforms = {name for name, _ in platforms}
+          if found_platforms != expected_platforms:
+              failures.append(
+                  f"platforms are {sorted(found_platforms) or 'none'}, expected "
+                  f"{sorted(expected_platforms)}"
+              )
           for name, labels in platforms:
               failures.extend(check(name, labels))
               print(f"{name} labels: {len(labels)} present")
@@ -510,7 +519,7 @@ jobs:
               print("  are set by two SEPARATE inputs — `build-args` and `annotations:`.")
               sys.exit(1)
 
-          print(f"metadata complete on the index and all {len(platforms)} platforms")
+          print("metadata complete on the index and on " + ", ".join(sorted(found_platforms)))
           PY
 
       # `always()`, because every gate in this job runs AFTER the image is public. A failing gate
