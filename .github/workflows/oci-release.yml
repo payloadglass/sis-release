@@ -208,6 +208,7 @@ jobs:
           ARG SIS_VERSION
           ARG SIS_REVISION
           ARG SIS_DESCRIPTION
+          ARG SIS_SOURCE
 
           COPY ctx/${TARGETARCH}/sis /usr/local/bin/sis
 
@@ -221,7 +222,7 @@ jobs:
                 org.opencontainers.image.description="${SIS_DESCRIPTION}" \
                 org.opencontainers.image.version="${SIS_VERSION}" \
                 org.opencontainers.image.revision="${SIS_REVISION}" \
-                org.opencontainers.image.source="https://github.com/payloadglass/sis-release" \
+                org.opencontainers.image.source="${SIS_SOURCE}" \
                 org.opencontainers.image.licenses="NOASSERTION"
 
           ENTRYPOINT ["/usr/local/bin/sis"]
@@ -245,6 +246,7 @@ jobs:
             SIS_VERSION=${{ steps.cfg.outputs.tag }}
             SIS_REVISION=${{ github.sha }}
             SIS_DESCRIPTION=${{ env.IMAGE_DESCRIPTION }}
+            SIS_SOURCE=https://github.com/${{ github.repository }}
           # A LABEL lands in each PLATFORM's config. GHCR's package page reads a multi-architecture
           # image's metadata from the INDEX, which has no config and therefore no labels — so the
           # first publish showed "No description provided" despite every platform config carrying
@@ -278,6 +280,7 @@ jobs:
                 --build-arg "SIS_VERSION=${tag}" \
                 --build-arg "SIS_REVISION=${{ github.sha }}" \
                 --build-arg "SIS_DESCRIPTION=${IMAGE_DESCRIPTION}" \
+                --build-arg "SIS_SOURCE=https://github.com/${{ github.repository }}" \
                 -f Containerfile -t "sis-local:${arch}" .
               img="sis-local:${arch}"
             else
@@ -333,29 +336,133 @@ jobs:
             sha256sum sis-oci.tar || true
           fi
 
-      # Without this, the annotation fix has no gate. GHCR reported "No description provided" for a
-      # week's worth of work that DID set the label correctly — the failure was silent, visible only
-      # on a web page nobody diffs. buildx's `index:` prefix is the load-bearing detail, and a syntax
-      # change or a dropped prefix would put us straight back there with a green run.
-      - name: Index annotations reach the registry
-        if: steps.cfg.outputs.push == 'true'
+      # Metadata reaches consumers through TWO mechanisms, and this checks both, because each
+      # can go blank without the other noticing:
+      #
+      #   index annotations       what GHCR's package page reads for a multi-arch image
+      #   per-platform LABELs     what `docker inspect` and most tooling read
+      #
+      # GHCR reported "No description provided" for an image whose every platform config carried the
+      # label correctly — a silent failure, visible only on a web page nobody diffs, which survived a
+      # full publish and an end-to-end verification pass.
+      #
+      # Two earlier versions of this gate were unsound, both found by review:
+      #
+      #   grepped the raw document   `imagetools inspect --raw` includes the manifest DESCRIPTORS, so
+      #                              annotations misplaced onto them (buildx's `manifest-descriptor:`
+      #                              level) matched while `index.annotations` stayed empty
+      #   checked keys, not values   an unknown `env` key interpolates to "" in Actions rather than
+      #                              erroring, so a typo'd reference passes a presence check
+      #   checked only the index     `build-args` and `annotations:` are two INDEPENDENT
+      #                              interpolations nine lines apart. Deleting or typo'ing the
+      #                              build-arg leaves `ARG SIS_DESCRIPTION` expanding to "" with no
+      #                              lint and no build failure, and an index-only gate is green over
+      #                              a blank label. Making these build args at all is what created
+      #                              that reachability — they used to be literals.
+      - name: Image metadata is complete on the index and every platform
+        env:
+          PUSHED: ${{ steps.cfg.outputs.push }}
+          TAG: ${{ steps.cfg.outputs.tag }}
+          EXPECTED_DESCRIPTION: ${{ env.IMAGE_DESCRIPTION }}
+          EXPECTED_SOURCE: https://github.com/${{ github.repository }}
         run: |
           set -euo pipefail
-          raw="$(docker buildx imagetools inspect "${IMAGE}:${{ steps.cfg.outputs.tag }}" --raw)"
-          missing=0
-          for key in title description version source; do
-            if ! printf '%s' "$raw" | grep -q "org.opencontainers.image.${key}"; then
-              echo "::error::the image INDEX carries no org.opencontainers.image.${key} annotation"
-              missing=1
-            fi
-          done
-          if [ "${missing}" -ne 0 ]; then
-            echo "  A LABEL lands in each platform's config; the index has no config, so GHCR shows"
-            echo "  'No description provided'. Annotations are the index's equivalent — check the"
-            echo "  \`index:\` prefix on the build-push-action \`annotations:\` input."
-            exit 1
-          fi
-          printf '%s' "$raw" | python3 -c 'import json,sys; a=json.load(sys.stdin).get("annotations") or {}; [print("  %s = %s" % (k, v)) for k, v in sorted(a.items())]'
+          python3 <<'PY'
+          import json, os, subprocess, sys, tarfile
+
+          pushed = os.environ["PUSHED"] == "true"
+          image, tag = os.environ["IMAGE"], os.environ["TAG"]
+          expected_description = os.environ["EXPECTED_DESCRIPTION"]
+          expected_source = os.environ["EXPECTED_SOURCE"]
+
+          KEY = "org.opencontainers.image."
+
+
+          def wanted(kind):
+              """kind is "index" or a platform string; both carry the same metadata."""
+              return {
+                  KEY + "title": "sis",
+                  KEY + "description": expected_description,
+                  KEY + "version": tag,
+                  KEY + "source": expected_source,
+                  KEY + "revision": None,   # a commit sha; presence and non-emptiness only
+                  KEY + "licenses": None,
+              }
+
+
+          def check(kind, present):
+              problems = []
+              for key, want in wanted(kind).items():
+                  got = present.get(key)
+                  if got is None:
+                      problems.append(f"{kind}: {key} absent")
+                  elif not str(got).strip():
+                      problems.append(f"{kind}: {key} present but EMPTY")
+                  elif want is not None and got != want:
+                      problems.append(f"{kind}: {key} is {got!r}, expected {want!r}")
+              return problems
+
+
+          index = None
+          platforms = []   # (name, labels)
+
+          if pushed:
+              index = json.loads(subprocess.run(
+                  ["docker", "buildx", "imagetools", "inspect", f"{image}:{tag}", "--raw"],
+                  capture_output=True, text=True, check=True).stdout)
+              for entry in index.get("manifests", []):
+                  spec = entry.get("platform") or {}
+                  if spec.get("architecture") in ("unknown", None):
+                      continue
+                  name = f"{spec.get('os')}/{spec.get('architecture')}"
+                  config = json.loads(subprocess.run(
+                      ["docker", "buildx", "imagetools", "inspect",
+                       f"{image}@{entry['digest']}", "--format", "{{json .Image}}"],
+                      capture_output=True, text=True, check=True).stdout)
+                  platforms.append((name, (config.get("config") or {}).get("Labels") or {}))
+          else:
+              # The dry run is the path a maintainer uses to test a metadata edit, so it is checked
+              # too — the OCI layout carries the same index and the same configs.
+              with tarfile.open("sis-oci.tar") as tf:
+                  def blob(digest):
+                      return json.load(tf.extractfile("blobs/sha256/" + digest.split(":", 1)[1]))
+
+                  root = json.load(tf.extractfile("index.json"))
+                  entry = root["manifests"][0]
+                  index = blob(entry["digest"]) if entry["mediaType"].endswith("index.v1+json") else root
+                  for manifest in index.get("manifests", []):
+                      spec = manifest.get("platform") or {}
+                      if spec.get("architecture") in ("unknown", None):
+                          continue
+                      name = f"{spec.get('os')}/{spec.get('architecture')}"
+                      config = blob(blob(manifest["digest"])["config"]["digest"])
+                      platforms.append((name, (config.get("config") or {}).get("Labels") or {}))
+
+          failures = check("index", index.get("annotations") or {})
+          print("index annotations:")
+          for key, value in sorted((index.get("annotations") or {}).items()):
+              print(f"  {key} = {value}")
+
+          if not platforms:
+              failures.append("no runnable platform manifests were found to check")
+          for name, labels in platforms:
+              failures.extend(check(name, labels))
+              print(f"{name} labels: {len(labels)} present")
+
+          if failures:
+              for line in failures:
+                  print(f"::error::{line}")
+              stray = [m.get("annotations") for m in index.get("manifests", []) if m.get("annotations")]
+              if stray:
+                  print("::error::annotations were found on the manifest DESCRIPTORS rather than on")
+                  print("  the index itself — the `annotations:` input needs the `index:` prefix.")
+              print("  A LABEL reaches a platform's config; the index has no config, so it has no")
+              print("  labels. Annotations are the index's equivalent. Both are required, and they")
+              print("  are set by two SEPARATE inputs — `build-args` and `annotations:`.")
+              sys.exit(1)
+
+          print(f"metadata complete on the index and all {len(platforms)} platforms")
+          PY
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
