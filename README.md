@@ -55,6 +55,51 @@ Prebuilt targets (also available directly from [Releases](https://github.com/pay
 On macOS and Windows the binary is unsigned, so the first launch may show a
 platform trust prompt (Gatekeeper / SmartScreen).
 
+### Container image
+
+A multi-architecture image (`linux/amd64` and `linux/arm64`) is published to
+GitHub Container Registry, for hosts where you would rather install nothing:
+
+```sh
+docker run --rm --network none --read-only \
+  -v "$PWD:/work:ro" ghcr.io/payloadglass/sis:v0.6.7 scan /work
+```
+
+`sis` is the entrypoint, so pass subcommands directly. The container runs as
+uid `65532` with `/work` as its working directory, needs no writable root
+filesystem, and needs no network to analyse local content — the flags above are
+the recommended posture, not a workaround.
+
+**There is no `latest` tag.** Tags are release tags, so pin the version you
+intend to run. For a byte-exact pin, use the digest:
+
+```sh
+docker pull ghcr.io/payloadglass/sis@sha256:e87cc58ffb94b2afd5dab654cdbf94034f94f41816daecbd1f0c3e2c84cdbe1f
+```
+
+Available tags are listed under
+[Packages](https://github.com/orgs/payloadglass/packages?repo_name=sis-release).
+
+<details>
+<summary>What the image's attestation does and does not cover</summary>
+
+The image is **assembled**, not rebuilt: it repackages the Linux archives this
+release already publishes, after verifying them against `SHA256SUMS`. The
+runtime base is pinned by digest, and the assembly step is Sigstore-signed and
+recorded in the public transparency log.
+
+The attestation therefore names the assembly workflow as the builder and
+attests *"this image was assembled from these exact published bytes."* It is
+**not** a cryptographic tie to a source commit — the same trade-off the release
+archives document. Verify it with:
+
+```sh
+gh attestation verify --owner payloadglass \
+  oci://ghcr.io/payloadglass/sis:v0.6.7
+```
+
+</details>
+
 ## Quick start
 
 ```sh
