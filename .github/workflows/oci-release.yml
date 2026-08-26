@@ -80,6 +80,24 @@ jobs:
           echo "push=${push}" >> "$GITHUB_OUTPUT"
           echo "Assembling ${tag} (push=${push})"
 
+      # §9's first perturbation is "a runtime digest is replaced by a mutable tag". Applied to the
+      # first draft of this workflow, it did not fail: RUNTIME_BASE was a plain string and every
+      # later check passed regardless of whether it named a digest or a tag. A tag is resolved at
+      # build time, so the image assembled today and the one assembled on a rerun could differ with
+      # nothing recording it — the moving-input class the whole plan exists to close.
+      - name: Runtime base must be digest-pinned
+        run: |
+          set -euo pipefail
+          case "${RUNTIME_BASE}" in
+            *@sha256:*) ;;
+            *) echo "::error::RUNTIME_BASE is not digest-pinned: ${RUNTIME_BASE}"
+               echo "  A tag resolves at build time, so two runs of the same release can assemble"
+               echo "  different images with nothing recording the difference. Pin it as"
+               echo "  <image>@sha256:<digest>."
+               exit 1 ;;
+          esac
+          echo "runtime base: ${RUNTIME_BASE}"
+
       - name: Download release archives
         env:
           GH_TOKEN: ${{ github.token }}
