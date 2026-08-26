@@ -81,7 +81,21 @@ jobs:
           [ -n "${tag}" ] || { echo "::error::no release tag to assemble"; exit 1; }
           # A release event publishes; a manual run validates unless explicitly told otherwise, so a
           # dry run cannot push a public image by forgetting a flag.
-          if [ "${{ github.event_name }}" = "release" ]; then push=true; else push="${{ github.event.inputs.push }}"; fi
+          if [ "${{ github.event_name }}" = "release" ]; then
+            push=true
+          else
+            push="${{ github.event.inputs.push }}"
+          fi
+          # NORMALISE, because two languages disagree about what equality means. Actions expressions
+          # compare strings case-INSENSITIVELY, Python does not — so a dispatch typed `push: True`
+          # made every YAML `== 'true'` fire (login, push, attest: the image goes public) while the
+          # gate's `os.environ["PUSHED"] == "true"` read false and took the dry-run branch, opening a
+          # tarball that was never written. One canonical value, decided here, removes the class.
+          push="$(printf '%s' "${push}" | tr '[:upper:]' '[:lower:]')"
+          case "${push}" in
+            true|false) ;;
+            *) echo "::error::push must be true or false, got '${push}'"; exit 1 ;;
+          esac
           echo "tag=${tag}"   >> "$GITHUB_OUTPUT"
           echo "push=${push}" >> "$GITHUB_OUTPUT"
           echo "Assembling ${tag} (push=${push})"
@@ -524,22 +538,23 @@ jobs:
           print("metadata complete on the index and on " + ", ".join(sorted(found_platforms)))
           PY
 
-      # `always()`, because every gate in this job runs AFTER the image is public. A failing gate
-      # therefore cannot unpublish anything — it can only destroy the record of what was published.
-      # The SBOM and the raw index are exactly what you need to diagnose the failure and to document
-      # the release that already happened, so they must outlive it. Covers the execution and
-      # byte-identity gates above too, which had this problem before the metadata gate existed.
+      # Runs whenever a BUILD WAS ATTEMPTED, which is not the same as `always()`.
+      #
+      # The gates after the build all run once the image is public, so a failure there cannot
+      # unpublish anything — it can only destroy the record. But three gates run BEFORE anything is
+      # built (digest pinning, SHA256SUMS, the glibc floor), and for those there is no record to
+      # preserve and no image to describe. Under a bare `always()` a checksum failure still produced
+      # an "evidence" artifact and a summary announcing a push that never happened.
+      #
+      # The name carries the ATTEMPT rather than relying on `overwrite`. Artifact names are scoped to
+      # the run, so a second attempt either 409s (overwrite: false) or DELETES the first attempt's
+      # artifact (overwrite: true) — and a re-run that fails early would then replace a complete
+      # four-file record of a published image with two files. Distinct names lose neither.
       - name: Upload evidence
-        if: always()
+        if: always() && steps.build.outcome != 'skipped'
         uses: actions/upload-artifact@v4
         with:
-          name: oci-evidence-${{ steps.cfg.outputs.tag }}
-          # `overwrite: true` because of the `always()` above, not despite it. Artifact names are
-          # scoped to the RUN, not the attempt, and the default is overwrite: false — so a failed
-          # attempt now uploads evidence, and "Re-run failed jobs" then fails with 409 Conflict on
-          # the upload. That would break exactly the fix-and-re-run flow `always()` exists to serve,
-          # and it would go red next to the metadata gate, reading as "the gate still fails".
-          overwrite: true
+          name: oci-evidence-${{ steps.cfg.outputs.tag }}-attempt-${{ github.run_attempt }}
           path: |
             binary-digests.txt
             sis-sbom.spdx.json
@@ -548,14 +563,15 @@ jobs:
           if-no-files-found: warn
 
       - name: Summary
-        if: always()
+        if: always() && steps.build.outcome != 'skipped'
         run: |
           {
             echo "### SIS OCI image — ${{ steps.cfg.outputs.tag }}"
             echo
             echo "| | |"
             echo "|---|---|"
-            echo "| pushed | \`${{ steps.cfg.outputs.push }}\` |"
+            echo "| build | \`${{ steps.build.outcome }}\` |"
+            echo "| pushed | \`${{ steps.cfg.outputs.push == 'true' && steps.build.outcome == 'success' }}\` |"
             echo "| image | \`${IMAGE}:${{ steps.cfg.outputs.tag }}\` |"
             echo "| index digest | \`${{ steps.digests.outputs.index }}\` |"
             echo "| runtime base | \`${RUNTIME_BASE}\` |"
