@@ -542,8 +542,8 @@ jobs:
       #
       # The gates after the build all run once the image is public, so a failure there cannot
       # unpublish anything — it can only destroy the record. But three gates run BEFORE anything is
-      # built (digest pinning, SHA256SUMS, the glibc floor), and for those there is no record to
-      # preserve and no image to describe. Under a bare `always()` a checksum failure still produced
+      # built — digest pinning, the archive download, SHA256SUMS and the glibc floor — and for those
+      # there is no record to preserve and no image to describe. Under a bare `always()` a checksum failure still produced
       # an "evidence" artifact and a summary announcing a push that never happened.
       #
       # The name carries the ATTEMPT rather than relying on `overwrite`. Artifact names are scoped to
