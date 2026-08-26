@@ -380,7 +380,7 @@ jobs:
       # label correctly — a silent failure, visible only on a web page nobody diffs, which survived a
       # full publish and an end-to-end verification pass.
       #
-      # Two earlier versions of this gate were unsound, both found by review:
+      # Three earlier versions of this gate were unsound, every one found by review:
       #
       #   grepped the raw document   `imagetools inspect --raw` includes the manifest DESCRIPTORS, so
       #                              annotations misplaced onto them (buildx's `manifest-descriptor:`
@@ -414,6 +414,21 @@ jobs:
           KEY = "org.opencontainers.image."
 
 
+          def registry(*args):
+              """Run an imagetools query, surfacing the registry's own error on failure.
+
+              `check=True` with `capture_output=True` raises CalledProcessError and DISCARDS stderr,
+              so a transient network fault reads as a metadata defect — two failures that want
+              opposite responses.
+              """
+              done = subprocess.run(args, capture_output=True, text=True)
+              if done.returncode != 0:
+                  print(f"::error::registry query failed: {' '.join(args)}")
+                  print(done.stderr.strip() or "(no stderr)")
+                  sys.exit(2)
+              return done.stdout
+
+
           def wanted(kind):
               """kind is "index" or a platform string; both carry the same metadata."""
               return {
@@ -443,18 +458,16 @@ jobs:
           platforms = []   # (name, labels)
 
           if pushed:
-              index = json.loads(subprocess.run(
-                  ["docker", "buildx", "imagetools", "inspect", f"{image}:{tag}", "--raw"],
-                  capture_output=True, text=True, check=True).stdout)
+              index = json.loads(registry(
+                  "docker", "buildx", "imagetools", "inspect", f"{image}:{tag}", "--raw"))
               for entry in index.get("manifests", []):
                   spec = entry.get("platform") or {}
                   if spec.get("architecture") in ("unknown", None):
                       continue
                   name = f"{spec.get('os')}/{spec.get('architecture')}"
-                  config = json.loads(subprocess.run(
-                      ["docker", "buildx", "imagetools", "inspect",
-                       f"{image}@{entry['digest']}", "--format", "{{json .Image}}"],
-                      capture_output=True, text=True, check=True).stdout)
+                  config = json.loads(registry(
+                      "docker", "buildx", "imagetools", "inspect",
+                      f"{image}@{entry['digest']}", "--format", "{{json .Image}}"))
                   platforms.append((name, (config.get("config") or {}).get("Labels") or {}))
           else:
               # The dry run is the path a maintainer uses to test a metadata edit, so it is checked
@@ -500,7 +513,13 @@ jobs:
           print(f"metadata complete on the index and all {len(platforms)} platforms")
           PY
 
+      # `always()`, because every gate in this job runs AFTER the image is public. A failing gate
+      # therefore cannot unpublish anything — it can only destroy the record of what was published.
+      # The SBOM and the raw index are exactly what you need to diagnose the failure and to document
+      # the release that already happened, so they must outlive it. Covers the execution and
+      # byte-identity gates above too, which had this problem before the metadata gate existed.
       - name: Upload evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: oci-evidence-${{ steps.cfg.outputs.tag }}
@@ -512,6 +531,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Summary
+        if: always()
         run: |
           {
             echo "### SIS OCI image — ${{ steps.cfg.outputs.tag }}"
