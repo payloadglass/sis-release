@@ -1,0 +1,405 @@
+# Assemble the SIS container image from PUBLISHED release artefacts.
+#
+# DEPLOY THIS TO: payloadglass/sis-release  ->  .github/workflows/oci-release.yml
+# Source of truth: michiel/sis:deploy/oci-release/oci-release.yml  (see the README beside it)
+#
+# It cannot live in the private michiel/sis, for the same two reasons attest-release.yml cannot:
+# `actions/attest-build-provenance` stores its attestation in the repo it RUNS in, that store must be
+# PUBLIC to be verifiable, and a user-owned private repository cannot persist one at all.
+#
+# NOTHING IS REBUILT. This repackages the Linux archives the release already published, so there is
+# no source, no Rust toolchain and no compilation — only assembly. That is what makes the binary in
+# the image byte-identical to the binary in the archive, which is a stronger statement than any
+# behavioural comparison between two separate builds could make.
+#
+# TRUST SEMANTICS, said plainly: the provenance predicate names THIS workflow as the builder. It
+# attests "this image was assembled from these exact published bytes by this workflow" — publication
+# provenance, not a cryptographic tie to the private source commit. Identical trade-off to
+# attest-release.yml. Do not let the image's documentation imply more than the archives' does.
+
+name: oci-release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to assemble, e.g. v0.6.7"
+        required: true
+      push:
+        description: "Push to GHCR. Leave false to build and validate only."
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  packages: write        # GHCR publication
+  id-token: write        # Sigstore OIDC (keyless signing)
+  attestations: write    # persist provenance to THIS (public) repo's attestation store
+
+concurrency:
+  group: oci-release-${{ github.event.release.tag_name || github.event.inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/sis
+
+  # Declared once and used TWICE — as a per-platform LABEL and as an index annotation. They are
+  # different mechanisms reaching different readers, and a description that lived in only one of
+  # them is exactly how this was wrong the first time round.
+  IMAGE_DESCRIPTION: "SIS — multi-format document and container security analyser. Scans PDF, Office, archive and container formats for active content, obfuscation and AI-directed injection."
+
+  # The runtime base, pinned by DIGEST so it cannot move under us.
+  #
+  # WHY TRIXIE AND NOT BOOKWORM. A GNU binary runs only on a glibc at least as new as the one it was
+  # LINKED against, and the archives decide that, not this workflow. Measured 2026-08-26 against the
+  # real v0.6.7 archives, which were built on the moving `ubuntu-latest`:
+  #
+  #     v0.6.7 requires        GLIBC_2.39
+  #     debian:bookworm-slim   glibc 2.36   ->  "GLIBC_2.39 not found"   cannot load it
+  #     debian:trixie-slim     glibc 2.41   ->  sis 0.6.7                works
+  #
+  # michiel/sis now pins its Linux builds to a Debian 12 builder, which drops the floor to 2.35 and
+  # makes bookworm-slim viable — but only for releases built AFTER that landed. Trixie carries both
+  # the old floor and the new one, so it is correct across the switchover rather than only after it.
+  # Moving to bookworm-slim later is a reviewed change, gated by the floor check below.
+  RUNTIME_BASE: docker.io/library/debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+  RUNTIME_BASE_GLIBC: "2.41"
+
+jobs:
+  assemble:
+    name: assemble ${{ github.event.release.tag_name || github.event.inputs.tag }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve inputs
+        id: cfg
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          [ -n "${tag}" ] || { echo "::error::no release tag to assemble"; exit 1; }
+          # A release event publishes; a manual run validates unless explicitly told otherwise, so a
+          # dry run cannot push a public image by forgetting a flag.
+          if [ "${{ github.event_name }}" = "release" ]; then push=true; else push="${{ github.event.inputs.push }}"; fi
+          echo "tag=${tag}"   >> "$GITHUB_OUTPUT"
+          echo "push=${push}" >> "$GITHUB_OUTPUT"
+          echo "Assembling ${tag} (push=${push})"
+
+      # §9's first perturbation is "a runtime digest is replaced by a mutable tag". Applied to the
+      # first draft of this workflow, it did not fail: RUNTIME_BASE was a plain string and every
+      # later check passed regardless of whether it named a digest or a tag. A tag is resolved at
+      # build time, so the image assembled today and the one assembled on a rerun could differ with
+      # nothing recording it — the moving-input class the whole plan exists to close.
+      - name: Runtime base must be digest-pinned
+        run: |
+          set -euo pipefail
+          case "${RUNTIME_BASE}" in
+            *@sha256:*) ;;
+            *) echo "::error::RUNTIME_BASE is not digest-pinned: ${RUNTIME_BASE}"
+               echo "  A tag resolves at build time, so two runs of the same release can assemble"
+               echo "  different images with nothing recording the difference. Pin it as"
+               echo "  <image>@sha256:<digest>."
+               exit 1 ;;
+          esac
+          echo "runtime base: ${RUNTIME_BASE}"
+
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dl
+          gh release download "${{ steps.cfg.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern '*-linux-gnu.tar.gz' --pattern 'SHA256SUMS' \
+            --dir dl
+          ls -l dl
+          # A release with no Linux archives is a misconfiguration, not a no-op.
+          for a in x86_64 aarch64; do
+            f="dl/sis-${{ steps.cfg.outputs.tag }}-${a}-unknown-linux-gnu.tar.gz"
+            [ -f "$f" ] || { echo "::error::missing ${f} on ${{ steps.cfg.outputs.tag }}"; exit 1; }
+          done
+
+      # Verify BEFORE unpacking. The checksum manifest is published for exactly this, and using bytes
+      # you have not verified while claiming a content-addressed pipeline is the substitution the
+      # whole exercise exists to avoid.
+      - name: Verify archives against SHA256SUMS
+        working-directory: dl
+        run: |
+          set -euo pipefail
+          [ -f SHA256SUMS ] || { echo "::error::SHA256SUMS absent — cannot verify inputs"; exit 1; }
+          # Check only the archives we actually consume; the manifest also covers windows/macos.
+          grep -E ' sis-.*-linux-gnu\.tar\.gz$' SHA256SUMS > linux.sums
+          [ -s linux.sums ] || { echo "::error::SHA256SUMS lists no linux archives"; exit 1; }
+          cat linux.sums
+          sha256sum -c linux.sums
+
+      - name: Unpack per architecture
+        run: |
+          set -euo pipefail
+          tag="${{ steps.cfg.outputs.tag }}"
+          mkdir -p ctx/amd64 ctx/arm64
+          tar -xzf "dl/sis-${tag}-x86_64-unknown-linux-gnu.tar.gz"  -C ctx/amd64 sis
+          tar -xzf "dl/sis-${tag}-aarch64-unknown-linux-gnu.tar.gz" -C ctx/arm64 sis
+          chmod +x ctx/amd64/sis ctx/arm64/sis
+          # Record what the image must satisfy. These are the bytes; everything downstream is checked
+          # against them.
+          sha256sum ctx/amd64/sis ctx/arm64/sis | tee binary-digests.txt
+
+      # The load-bearing check. This workflow consumes artefacts it did not build, from a release it
+      # does not control — so it measures the floor itself rather than trusting a gate that ran in
+      # another repository on another artefact.
+      #
+      # Mirrors michiel/sis:scripts/check-glibc-floor.sh. It is inlined rather than sourced because a
+      # DEPLOYED workflow has no repository to source from; keep the two in step deliberately.
+      - name: Guard glibc floor and shared-library needs
+        run: |
+          set -euo pipefail
+          base_glibc="${RUNTIME_BASE_GLIBC}"
+          fail=0
+          for arch in amd64 arm64; do
+            bin="ctx/${arch}/sis"
+            needed="$(readelf -d "$bin" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p' | sort | tr '\n' ' ')"
+            floor="$(readelf -V "$bin" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -u -V | tail -1 | sed 's/^GLIBC_//')"
+            echo "${arch}: glibc_floor=${floor:-none} needed=${needed}"
+            if [ -n "${floor}" ]; then
+              highest="$(printf '%s\n%s\n' "${floor}" "${base_glibc}" | sort -V | tail -1)"
+              if [ "${floor}" != "${base_glibc}" ] && [ "${highest}" = "${floor}" ]; then
+                echo "::error::${arch} requires glibc ${floor}, above the runtime base's ${base_glibc}."
+                echo "  The image would fail at startup with: version \`GLIBC_${floor}' not found"
+                echo "  Raise RUNTIME_BASE deliberately, or release artefacts built against an older glibc."
+                fail=1
+              fi
+            fi
+            # The architectures differ in linkage: the amd64 binary links system zlib and the aarch64
+            # one does not, because the cross build had no aarch64 system zlib. So this is checked per
+            # architecture, and a scratch/distroless-static base cannot serve both.
+            echo "${needed}" > "ctx/${arch}/needed.txt"
+          done
+          [ "${fail}" -eq 0 ] || exit 1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.cfg.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No RUN instruction anywhere: the image is a base plus a COPY. That is what lets both platforms
+      # be assembled without emulating either — TARGETARCH picks the already-built binary — and it is
+      # why a non-root user is expressed numerically rather than created with adduser.
+      - name: Write Containerfile
+        run: |
+          set -euo pipefail
+          # `ARG BASE` deliberately has NO default. Buildx lints that (InvalidDefaultArgInFrom),
+          # but a default would be a second place the runtime base is declared, and a missing
+          # build-arg would then silently build on it instead of failing. Fail-closed beats quiet.
+          cat > Containerfile <<'EOF'
+          ARG BASE
+          FROM ${BASE}
+          ARG TARGETARCH
+          ARG SIS_VERSION
+          ARG SIS_REVISION
+          ARG SIS_DESCRIPTION
+
+          COPY ctx/${TARGETARCH}/sis /usr/local/bin/sis
+
+          # Numeric, so no RUN is needed to create it. 65532 is the conventional "nonroot" id.
+          USER 65532:65532
+          # `sis doctor` warns when the working directory is not writable; /work is the documented
+          # mount point for a writable scratch, and the read-only validation below mounts a tmpfs here.
+          WORKDIR /work
+
+          LABEL org.opencontainers.image.title="sis" \
+                org.opencontainers.image.description="${SIS_DESCRIPTION}" \
+                org.opencontainers.image.version="${SIS_VERSION}" \
+                org.opencontainers.image.revision="${SIS_REVISION}" \
+                org.opencontainers.image.source="https://github.com/payloadglass/sis-release" \
+                org.opencontainers.image.licenses="NOASSERTION"
+
+          ENTRYPOINT ["/usr/local/bin/sis"]
+          EOF
+          cat Containerfile
+
+      - name: Build multi-architecture image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.cfg.outputs.push == 'true' }}
+          load: false
+          provenance: false      # the Sigstore attestation below is the provenance; buildx's inline
+          sbom: false            # attestations would add a second, weaker claim to the same index
+          tags: ${{ env.IMAGE }}:${{ steps.cfg.outputs.tag }}
+          build-args: |
+            BASE=${{ env.RUNTIME_BASE }}
+            SIS_VERSION=${{ steps.cfg.outputs.tag }}
+            SIS_REVISION=${{ github.sha }}
+            SIS_DESCRIPTION=${{ env.IMAGE_DESCRIPTION }}
+          # A LABEL lands in each PLATFORM's config. GHCR's package page reads a multi-architecture
+          # image's metadata from the INDEX, which has no config and therefore no labels — so the
+          # first publish showed "No description provided" despite every platform config carrying
+          # one. Annotations are the index's equivalent, and `index:` is what puts them there rather
+          # than on a platform manifest.
+          annotations: |
+            index:org.opencontainers.image.title=sis
+            index:org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
+            index:org.opencontainers.image.version=${{ steps.cfg.outputs.tag }}
+            index:org.opencontainers.image.revision=${{ github.sha }}
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.licenses=NOASSERTION
+          outputs: ${{ steps.cfg.outputs.push == 'true' && 'type=image' || 'type=oci,dest=sis-oci.tar' }}
+
+      # EXECUTED, not read off a manifest field. An arm64 manifest carrying the amd64 binary satisfies
+      # every structural check and fails only when something tries to run it.
+      - name: Validate both architectures by execution
+        run: |
+          set -euo pipefail
+          tag="${{ steps.cfg.outputs.tag }}"
+          if [ "${{ steps.cfg.outputs.push }}" = "true" ]; then
+            ref="${IMAGE}:${tag}"
+          else
+            # The oci archive is not loadable by `docker load`; rebuild each platform locally instead.
+            ref=""
+          fi
+          for arch in amd64 arm64; do
+            if [ -z "${ref}" ]; then
+              docker buildx build --platform "linux/${arch}" --load \
+                --build-arg "BASE=${RUNTIME_BASE}" \
+                --build-arg "SIS_VERSION=${tag}" \
+                --build-arg "SIS_REVISION=${{ github.sha }}" \
+                --build-arg "SIS_DESCRIPTION=${IMAGE_DESCRIPTION}" \
+                -f Containerfile -t "sis-local:${arch}" .
+              img="sis-local:${arch}"
+            else
+              img="${ref}"
+            fi
+            echo "── linux/${arch} ──"
+            # version
+            got="$(docker run --rm --platform "linux/${arch}" "${img}" --version)"
+            echo "  ${got}"
+            case "${got}" in *"${tag#v}"*) ;; *) echo "::error::${arch}: --version did not report ${tag}"; exit 1 ;; esac
+            # non-root
+            uid="$(docker run --rm --platform "linux/${arch}" --entrypoint /bin/sh "${img}" -c 'id -u')"
+            [ "${uid}" = "65532" ] || { echo "::error::${arch}: runs as uid ${uid}, expected 65532"; exit 1; }
+            # exit status propagates
+            set +e
+            docker run --rm --platform "linux/${arch}" "${img}" --no-such-flag >/dev/null 2>&1
+            rc=$?
+            set -e
+            [ "${rc}" -ne 0 ] || { echo "::error::${arch}: a bad invocation exited 0"; exit 1; }
+            # read-only root filesystem with a writable /work
+            docker run --rm --platform "linux/${arch}" --read-only --tmpfs /work "${img}" --version >/dev/null
+            echo "  ok: non-root, exit status propagates, runs read-only"
+          done
+
+      # The image binary must BE the published binary, not merely behave like it. Repackaging is what
+      # earns this check; a from-source container build could not make the claim at all.
+      - name: Byte-identity of the layer binary
+        run: |
+          set -euo pipefail
+          tag="${{ steps.cfg.outputs.tag }}"
+          for arch in amd64 arm64; do
+            if [ "${{ steps.cfg.outputs.push }}" = "true" ]; then img="${IMAGE}:${tag}"; else img="sis-local:${arch}"; fi
+            got="$(docker run --rm --platform "linux/${arch}" --entrypoint /bin/sh "${img}" -c 'sha256sum /usr/local/bin/sis' | awk '{print $1}')"
+            want="$(sha256sum "ctx/${arch}/sis" | awk '{print $1}')"
+            echo "${arch}: layer=${got} archive=${want}"
+            [ "${got}" = "${want}" ] || { echo "::error::${arch}: layer binary differs from the published archive"; exit 1; }
+          done
+
+      - name: Record digests
+        id: digests
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.cfg.outputs.push }}" = "true" ]; then
+            index="${{ steps.build.outputs.digest }}"
+            echo "index=${index}" >> "$GITHUB_OUTPUT"
+            echo "index digest: ${index}"
+            docker buildx imagetools inspect "${IMAGE}:${{ steps.cfg.outputs.tag }}" --raw | tee index.json
+            docker buildx imagetools inspect "${IMAGE}:${{ steps.cfg.outputs.tag }}"
+          else
+            echo "index=" >> "$GITHUB_OUTPUT"
+            echo "dry run: no index digest (nothing was pushed)"
+            ls -l sis-oci.tar || true
+            sha256sum sis-oci.tar || true
+          fi
+
+      # Without this, the annotation fix has no gate. GHCR reported "No description provided" for a
+      # week's worth of work that DID set the label correctly — the failure was silent, visible only
+      # on a web page nobody diffs. buildx's `index:` prefix is the load-bearing detail, and a syntax
+      # change or a dropped prefix would put us straight back there with a green run.
+      - name: Index annotations reach the registry
+        if: steps.cfg.outputs.push == 'true'
+        run: |
+          set -euo pipefail
+          raw="$(docker buildx imagetools inspect "${IMAGE}:${{ steps.cfg.outputs.tag }}" --raw)"
+          missing=0
+          for key in title description version source; do
+            if ! printf '%s' "$raw" | grep -q "org.opencontainers.image.${key}"; then
+              echo "::error::the image INDEX carries no org.opencontainers.image.${key} annotation"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "  A LABEL lands in each platform's config; the index has no config, so GHCR shows"
+            echo "  'No description provided'. Annotations are the index's equivalent — check the"
+            echo "  \`index:\` prefix on the build-push-action \`annotations:\` input."
+            exit 1
+          fi
+          printf '%s' "$raw" | python3 -c 'import json,sys; a=json.load(sys.stdin).get("annotations") or {}; [print("  %s = %s" % (k, v)) for k, v in sorted(a.items())]'
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.cfg.outputs.push == 'true' && format('{0}:{1}', env.IMAGE, steps.cfg.outputs.tag) || '' }}
+          path: ${{ steps.cfg.outputs.push == 'true' && '' || 'ctx' }}
+          format: spdx-json
+          output-file: sis-sbom.spdx.json
+          upload-artifact: false
+
+      # Subject is the TOP-LEVEL index digest, so one attestation covers the multi-architecture image
+      # rather than each platform manifest separately.
+      - name: Attest the image index
+        if: steps.cfg.outputs.push == 'true'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: oci-evidence-${{ steps.cfg.outputs.tag }}
+          path: |
+            binary-digests.txt
+            sis-sbom.spdx.json
+            index.json
+            dl/SHA256SUMS
+          if-no-files-found: warn
+
+      - name: Summary
+        run: |
+          {
+            echo "### SIS OCI image — ${{ steps.cfg.outputs.tag }}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| pushed | \`${{ steps.cfg.outputs.push }}\` |"
+            echo "| image | \`${IMAGE}:${{ steps.cfg.outputs.tag }}\` |"
+            echo "| index digest | \`${{ steps.digests.outputs.index }}\` |"
+            echo "| runtime base | \`${RUNTIME_BASE}\` |"
+            echo "| base glibc | ${RUNTIME_BASE_GLIBC} |"
+            echo
+            echo "Provenance attests that these bytes were assembled from the published archives by"
+            echo "this workflow. It is **not** a cryptographic tie to the private source commit."
+          } >> "$GITHUB_STEP_SUMMARY"
