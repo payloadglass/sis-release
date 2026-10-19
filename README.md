@@ -256,7 +256,7 @@ Every file is read for five consumers, because risk depends on who ingests it:
 | `sis generate` | YARA rule generation and test-fixture mutation |
 | `sis diff` | Diff two scan outputs for finding- or verdict-level drift |
 | `sis watch` | Watch a directory and scan files as they arrive |
-| `sis doc` | Print bundled documentation |
+| `sis docs` | Print bundled documentation |
 | `sis config` | Configuration initialisation and validation |
 | `sis update` | Self-update from GitHub releases |
 
@@ -286,10 +286,10 @@ parallel = true
 All reference material ships inside the binary:
 
 ```sh
-sis doc index          # list available topics
-sis doc taxonomy       # finding taxonomy and data model
-sis doc formats        # supported formats and nesting rules
-sis doc architecture   # architecture and command-surface overview
+sis docs index          # list available topics
+sis docs taxonomy       # finding taxonomy and data model
+sis docs formats        # supported formats and nesting rules
+sis docs architecture   # architecture and command-surface overview
 ```
 
 ## Updating
