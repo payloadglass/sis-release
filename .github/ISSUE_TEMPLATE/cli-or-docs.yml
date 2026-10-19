@@ -1,0 +1,30 @@
+name: CLI or documentation problem
+description: Unexpected CLI behaviour, or documentation that is wrong or unclear.
+labels: ["cli-docs"]
+body:
+  - type: input
+    id: platform
+    attributes:
+      label: OS and platform
+      description: For example Ubuntu 24.04 x86_64, macOS 15 arm64, Windows 11 x86_64.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: "`sis --version` output"
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Command or documentation page
+      description: The exact command you ran, or the doc page (for example `sis docs scan` or a README section).
+    validations:
+      required: true
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: What happened versus what you expected
+    validations:
+      required: true

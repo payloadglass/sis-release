@@ -1,0 +1,59 @@
+name: Crash or hang
+description: sis crashed, panicked, hung or ran out of resources.
+labels: ["crash"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach the input file or paste its contents. Give its sha256 only.
+  - type: input
+    id: platform
+    attributes:
+      label: OS and platform
+      description: For example Ubuntu 24.04 x86_64, macOS 15 arm64, Windows 11 x86_64.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: "`sis --version` output"
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: exit-code
+    attributes:
+      label: Exit code
+      description: Use `echo $?` (or `$LASTEXITCODE` in PowerShell) right after the command. Say "killed" if you stopped a hang.
+    validations:
+      required: true
+  - type: textarea
+    id: stderr
+    attributes:
+      label: stderr output
+      description: Redact file paths or other sensitive details if needed.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: sha256
+    attributes:
+      label: sha256 of the input
+      description: Output of `sha256sum file`. The hash only, never the file.
+  - type: dropdown
+    id: reproduces
+    attributes:
+      label: Does it reproduce?
+      options:
+        - Every time
+        - Sometimes
+        - Only once
+        - Not tried
+    validations:
+      required: true

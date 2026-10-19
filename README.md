@@ -55,6 +55,37 @@ Prebuilt targets (also available directly from [Releases](https://github.com/pay
 On macOS and Windows the binary is unsigned, so the first launch may show a
 platform trust prompt (Gatekeeper / SmartScreen).
 
+### Beta releases
+
+v0.7.0-beta.1 is a public **prerelease**. Beta means usable but still moving:
+output, verdicts and command behaviour can change between betas. It is opt-in;
+a normal install or `sis update` keeps giving the latest stable release.
+
+Get the beta:
+
+```sh
+sis update --include-prerelease
+```
+
+or, for a fresh install:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/payloadglass/sis-release/main/scripts/install.sh | SIS_INSTALL_PRERELEASE=1 sh
+```
+
+```powershell
+$env:SIS_INSTALL_PRERELEASE = "1"; irm https://raw.githubusercontent.com/payloadglass/sis-release/main/scripts/install.ps1 | iex
+```
+
+Go back to stable by re-running the normal installer (without
+`SIS_INSTALL_PRERELEASE`), which installs the latest stable release over the
+beta. In PowerShell, clear the variable first with
+`Remove-Item Env:SIS_INSTALL_PRERELEASE`.
+
+Report problems in this repository's
+[Issues](https://github.com/payloadglass/sis-release/issues/new/choose) using
+the templates. Never attach a sample or paste its contents; give its sha256.
+
 ### Container image
 
 A multi-architecture image (`linux/amd64` and `linux/arm64`) is published to
@@ -62,7 +93,7 @@ GitHub Container Registry, for hosts where you would rather install nothing:
 
 ```sh
 docker run --rm --network none --read-only \
-  -v "$PWD:/work:ro" ghcr.io/payloadglass/sis:v0.6.7 scan /work
+  -v "$PWD:/work:ro" ghcr.io/payloadglass/sis:v0.6.9 scan /work
 ```
 
 `sis` is the entrypoint, so pass subcommands directly. The container runs as
@@ -71,11 +102,15 @@ filesystem, and needs no network to analyse local content — the flags above ar
 the recommended posture, not a workaround.
 
 **There is no `latest` tag.** Tags are release tags, so pin the version you
-intend to run. For a byte-exact pin, use the digest:
+intend to run. For a byte-exact pin, use the image digest:
 
 ```sh
-docker pull ghcr.io/payloadglass/sis@sha256:e87cc58ffb94b2afd5dab654cdbf94034f94f41816daecbd1f0c3e2c84cdbe1f
+docker pull ghcr.io/payloadglass/sis@sha256:<digest>
 ```
+
+Find the digest of a tag with `docker buildx imagetools inspect
+ghcr.io/payloadglass/sis:v0.6.9` (the `Digest:` line), or on the package page
+linked below.
 
 Available tags are listed under
 [Packages](https://github.com/orgs/payloadglass/packages?repo_name=sis-release).
@@ -95,7 +130,7 @@ archives document. Verify it with:
 
 ```sh
 gh attestation verify --owner payloadglass \
-  oci://ghcr.io/payloadglass/sis:v0.6.7
+  oci://ghcr.io/payloadglass/sis:v0.6.9
 ```
 
 </details>
@@ -117,8 +152,8 @@ sis scan --path attachments/ --deep --jsonl-findings
 # SARIF for code-scanning pipelines
 sis scan sample.pdf --deep --sarif-out report.sarif
 
-# Classify whether a document is safe to feed to a model (exit code = label)
-sis ingest-risk sample.pdf --json
+# Classify AI-ingestion risk of a document (exit code = label)
+sis assess sample.pdf --for ai-ingest --json
 
 # Sanitise active content and prove what changed
 sis sanitize sample.pdf --out clean.pdf --report-json report.json
@@ -209,7 +244,7 @@ Every file is read for five consumers, because risk depends on who ingests it:
 | `sis report` | Full report generation (markdown / JSON / YAML) |
 | `sis explain` | Detailed explanation for a specific finding ID |
 | `sis extract` | Hostile-aware, provenanced text extraction (safe text for RAG/search) |
-| `sis ingest-risk` | Classify a document's AI-ingestion risk; exit code encodes the label |
+| `sis assess` | Classify a document's AI-ingestion risk (`--for ai-ingest`); the default exit code encodes the label (0 none, 5 indeterminate, 10 instruction-bearing, 20 hidden instruction, 30 poisoning likely) |
 | `sis sanitize` | CDR strip-and-report for active-content removal |
 | `sis verify-cdr` | Verify-rescan a sanitised derivative and report residual risk |
 | `sis cdr-gateway` | Batch CDR with release decisions and evidence reports |
