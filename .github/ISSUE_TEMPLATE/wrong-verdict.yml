@@ -1,0 +1,59 @@
+name: Wrong verdict
+description: sis gave a verdict that looks wrong (false positive or false negative).
+labels: ["verdict"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Do not attach the sample or paste its contents.
+
+        **Do not attach the sample or paste its contents. If you are willing to share it, say so and the maintainers will explain how to do it safely.**
+  - type: input
+    id: platform
+    attributes:
+      label: OS and platform
+      description: For example Ubuntu 24.04 x86_64, macOS 15 arm64, Windows 11 x86_64.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: "`sis --version` output"
+    validations:
+      required: true
+  - type: input
+    id: sha256
+    attributes:
+      label: sha256 of the file
+      description: Output of `sha256sum file` (or `shasum -a 256 file`). The hash only, never the file.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command run
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: scan-excerpt
+    attributes:
+      label: Excerpt of scan JSON
+      description: From `sis scan <file> --format json`. Include `verdict`, `analysis_coverage` and the finding kinds. Redact paths or anything sensitive.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected versus actual, and why
+      description: What verdict you expected, what you got, and why you believe the expected one is right.
+    validations:
+      required: true
+  - type: checkboxes
+    id: no-sample
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have not attached the sample or pasted its contents
+          required: true

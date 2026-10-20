@@ -37,7 +37,16 @@ case "$os" in
     ;;
 esac
 
-api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
+# Stable by default: /releases/latest returns the newest non-draft,
+# non-prerelease release as a single object. The releases list includes
+# prereleases (newest first), so it is used only when explicitly requested.
+if [ "${SIS_INSTALL_PRERELEASE:-}" = "1" ]; then
+  echo "Installing newest release including prereleases (SIS_INSTALL_PRERELEASE=1)"
+  api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
+else
+  echo "Installing latest stable release"
+  api_url="https://api.github.com/repos/$REPO/releases/latest"
+fi
 release_json="$(curl -fsSL -H "User-Agent: sis-install" "$api_url")" || {
   echo "Failed to query GitHub releases for $REPO" >&2
   exit 1
@@ -63,7 +72,8 @@ tag=""
   read -r url
 } <<EOF_META
 $(printf "%s" "$release_json" | awk -v suffix="$suffix" '
-  # The GitHub API returns the releases array as a single minified line, so we
+  # The GitHub API returns either the releases array (prerelease opt-in) or a
+  # single release object (/releases/latest) as one minified line, so we
   # walk every "name":"..." occurrence on the record rather than assuming one
   # asset per line. The first CLI asset (sis-<tag>-<target>.<ext>) wins; the
   # companion sis-app-* artefact is skipped.

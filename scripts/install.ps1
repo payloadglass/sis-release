@@ -13,11 +13,23 @@ if ([string]::IsNullOrWhiteSpace($installDir)) {
 $target = "x86_64-pc-windows-msvc"
 $ext = "zip"
 
-$apiUrl = "https://api.github.com/repos/$repo/releases?per_page=20"
-$releases = Invoke-RestMethod -Headers @{"User-Agent" = "sis-install"} -Uri $apiUrl
-if ($releases -is [System.Collections.IDictionary] -and $releases.message) {
-  throw "GitHub API error: $($releases.message)"
+# Stable by default: /releases/latest returns the newest non-draft,
+# non-prerelease release. The list includes prereleases (newest first), so it
+# is used only when explicitly requested.
+if ($env:SIS_INSTALL_PRERELEASE -eq "1") {
+  Write-Host "Installing newest release including prereleases (SIS_INSTALL_PRERELEASE=1)"
+  $apiUrl = "https://api.github.com/repos/$repo/releases?per_page=20"
+} else {
+  Write-Host "Installing latest stable release"
+  $apiUrl = "https://api.github.com/repos/$repo/releases/latest"
 }
+$response = Invoke-RestMethod -Headers @{"User-Agent" = "sis-install"} -Uri $apiUrl
+if ($response -is [System.Collections.IDictionary] -and $response.message) {
+  throw "GitHub API error: $($response.message)"
+}
+# /releases/latest returns one object, the list returns an array; wrap so the
+# loop below handles both.
+$releases = @($response)
 $suffix = "-$target.$ext"
 $release = $null
 $asset = $null
