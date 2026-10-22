@@ -157,9 +157,33 @@ jobs:
           tar -xzf "dl/sis-${tag}-x86_64-unknown-linux-gnu.tar.gz"  -C ctx/amd64 sis
           tar -xzf "dl/sis-${tag}-aarch64-unknown-linux-gnu.tar.gz" -C ctx/arm64 sis
           chmod +x ctx/amd64/sis ctx/arm64/sis
+          # `sis sanitize release` spawns sis-cdr-worker from the directory of the sis executable, so
+          # the image must carry it beside sis. Releases before the one that first shipped it do not
+          # have it: note that and carry on, so those tags can still be assembled.
+          # ctx/<arch>/image/ is exactly what the Containerfile copies into /usr/local/bin.
+          for pair in "amd64:x86_64" "arm64:aarch64"; do
+            arch="${pair%%:*}"; triple="${pair##*:}"
+            archive="dl/sis-${tag}-${triple}-unknown-linux-gnu.tar.gz"
+            mkdir -p "ctx/${arch}/image"
+            cp "ctx/${arch}/sis" "ctx/${arch}/image/sis"
+            # Listing first: `tar | grep -q` can SIGPIPE tar and trip pipefail.
+            members="$(tar -tzf "${archive}")"
+            if printf '%s\n' "${members}" | grep -Eqx '(\./)?sis-cdr-worker'; then
+              tar -xzf "${archive}" -C "ctx/${arch}" sis-cdr-worker
+              chmod +x "ctx/${arch}/sis-cdr-worker"
+              cp "ctx/${arch}/sis-cdr-worker" "ctx/${arch}/image/sis-cdr-worker"
+              echo "${arch}: sis-cdr-worker included"
+            else
+              echo "::notice::${arch}: ${tag} has no sis-cdr-worker; the image will not support \`sis sanitize release\`"
+            fi
+          done
           # Record what the image must satisfy. These are the bytes; everything downstream is checked
           # against them.
           sha256sum ctx/amd64/sis ctx/arm64/sis | tee binary-digests.txt
+          for w in ctx/amd64/sis-cdr-worker ctx/arm64/sis-cdr-worker; do
+            [ -f "$w" ] && sha256sum "$w" | tee -a binary-digests.txt
+          done
+          true
 
       # The load-bearing check. This workflow consumes artefacts it did not build, from a release it
       # does not control — so it measures the floor itself rather than trusting a gate that ran in
@@ -190,6 +214,18 @@ jobs:
             # one does not, because the cross build had no aarch64 system zlib. So this is checked per
             # architecture, and a scratch/distroless-static base cannot serve both.
             echo "${needed}" > "ctx/${arch}/needed.txt"
+            # The worker is a second executable in the image, so it gets the same floor check.
+            if [ -f "ctx/${arch}/sis-cdr-worker" ]; then
+              wfloor="$(readelf -V "ctx/${arch}/sis-cdr-worker" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -u -V | tail -1 | sed 's/^GLIBC_//')"
+              echo "${arch}: sis-cdr-worker glibc_floor=${wfloor:-none}"
+              if [ -n "${wfloor}" ]; then
+                whighest="$(printf '%s\n%s\n' "${wfloor}" "${base_glibc}" | sort -V | tail -1)"
+                if [ "${wfloor}" != "${base_glibc}" ] && [ "${whighest}" = "${wfloor}" ]; then
+                  echo "::error::${arch} sis-cdr-worker requires glibc ${wfloor}, above the runtime base's ${base_glibc}."
+                  fail=1
+                fi
+              fi
+            fi
           done
           [ "${fail}" -eq 0 ] || exit 1
 
@@ -226,7 +262,10 @@ jobs:
           ARG SIS_SOURCE
           ARG SIS_LICENSES
 
-          COPY ctx/${TARGETARCH}/sis /usr/local/bin/sis
+          # A directory copy: sis, plus sis-cdr-worker when the release has one. Both land in the
+          # directory of the ENTRYPOINT binary, which is where sis looks for the worker. COPY keeps
+          # the source mode (0755, set in "Unpack per architecture").
+          COPY ctx/${TARGETARCH}/image/ /usr/local/bin/
 
           # Numeric, so no RUN is needed to create it. 65532 is the conventional "nonroot" id.
           USER 65532:65532
@@ -335,6 +374,12 @@ jobs:
             want="$(sha256sum "ctx/${arch}/sis" | awk '{print $1}')"
             echo "${arch}: layer=${got} archive=${want}"
             [ "${got}" = "${want}" ] || { echo "::error::${arch}: layer binary differs from the published archive"; exit 1; }
+            if [ -f "ctx/${arch}/sis-cdr-worker" ]; then
+              wgot="$(docker run --rm --platform "linux/${arch}" --entrypoint /bin/sh "${img}" -c 'sha256sum /usr/local/bin/sis-cdr-worker' | awk '{print $1}')"
+              wwant="$(sha256sum "ctx/${arch}/sis-cdr-worker" | awk '{print $1}')"
+              echo "${arch}: worker layer=${wgot} archive=${wwant}"
+              [ "${wgot}" = "${wwant}" ] || { echo "::error::${arch}: layer worker differs from the published archive"; exit 1; }
+            fi
           done
 
       - name: Record digests
