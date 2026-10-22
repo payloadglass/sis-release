@@ -37,6 +37,9 @@ case "$os" in
     ;;
 esac
 
+# SIS_TEST_ARCHIVE is for testing only: a local .tar.gz to install from instead
+# of querying GitHub and downloading. Not a supported user-facing option.
+if [ -z "${SIS_TEST_ARCHIVE:-}" ]; then
 # Stable by default: /releases/latest returns the newest non-draft,
 # non-prerelease release as a single object. The releases list includes
 # prereleases (newest first), so it is used only when explicitly requested.
@@ -114,12 +117,18 @@ if [ -z "$url" ]; then
   fi
   exit 1
 fi
+fi
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
-archive="$tmpdir/sis-$tag-$target.$ext"
-curl -fsSL -H "User-Agent: sis-install" -o "$archive" "$url"
+if [ -n "${SIS_TEST_ARCHIVE:-}" ]; then
+  tag="test"
+  archive="$SIS_TEST_ARCHIVE"
+else
+  archive="$tmpdir/sis-$tag-$target.$ext"
+  curl -fsSL -H "User-Agent: sis-install" -o "$archive" "$url"
+fi
 
 tar -C "$tmpdir" -xzf "$archive"
 
@@ -127,6 +136,19 @@ tar -C "$tmpdir" -xzf "$archive"
 mkdir -p "$INSTALL_DIR"
 
 install -m 755 "$tmpdir/$bin_name" "$INSTALL_DIR/$bin_name"
+
+# `sis sanitize release` looks for sis-cdr-worker in the same directory as sis,
+# so install it there. Archives before the release that first shipped it
+# (e.g. v0.7.0-beta.1, v0.6.9) do not contain it.
+# Integrity: this script verifies no checksums for sis either; the worker comes from the same
+# downloaded archive, so it gets exactly the same treatment as sis.
+worker_name="sis-cdr-worker"
+if [ -f "$tmpdir/$worker_name" ]; then
+  install -m 755 "$tmpdir/$worker_name" "$INSTALL_DIR/$worker_name"
+  echo "Installed $worker_name to $INSTALL_DIR/$worker_name"
+else
+  echo "note: this release has no $worker_name; \`sis sanitize release\` is unavailable"
+fi
 
 echo "Installed sis $tag to $INSTALL_DIR/$bin_name"
 if ! command -v sis >/dev/null 2>&1; then
