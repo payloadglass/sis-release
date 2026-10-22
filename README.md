@@ -43,6 +43,11 @@ The installer downloads the matching archive for your platform and places the
 `sis` binary in `~/.local/bin` (override with `SIS_INSTALL_DIR`). If that
 directory is not on your `PATH`, the installer prints a note.
 
+Releases that ship `sis-cdr-worker` get it installed in the same directory as
+`sis`, because `sis sanitize release` looks for the worker next to the `sis`
+executable. Older releases (such as v0.7.0-beta.1) do not include it; the
+installer prints a note and `sis sanitize release` is unavailable there.
+
 Prebuilt targets (also available directly from [Releases](https://github.com/payloadglass/sis-release/releases)):
 
 | Platform | Target | Archive |

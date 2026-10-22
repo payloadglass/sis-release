@@ -60,6 +60,17 @@ try {
   Expand-Archive -Path $archivePath -DestinationPath $tempDir -Force
   New-Item -ItemType Directory -Force -Path $installDir | Out-Null
   Copy-Item (Join-Path $tempDir "sis.exe") (Join-Path $installDir "sis.exe") -Force
+  # `sis sanitize release` looks for sis-cdr-worker.exe in the same directory as
+  # sis.exe. Archives that predate it (e.g. v0.7.0-beta.1, v0.6.9) do not have it.
+  # No per-file checksums are verified for sis.exe either; the worker comes from
+  # the same downloaded archive.
+  $workerSrc = Join-Path $tempDir "sis-cdr-worker.exe"
+  if (Test-Path -LiteralPath $workerSrc) {
+    Copy-Item $workerSrc (Join-Path $installDir "sis-cdr-worker.exe") -Force
+    Write-Host "Installed sis-cdr-worker.exe to $installDir\sis-cdr-worker.exe"
+  } else {
+    Write-Host "note: this release has no sis-cdr-worker.exe; ``sis sanitize release`` is unavailable"
+  }
   Write-Host "Installed sis $($release.tag_name) to $installDir\sis.exe"
   if (-not (Get-Command sis -ErrorAction SilentlyContinue)) {
     Write-Host "Add $installDir to your PATH to run sis"
