@@ -57,6 +57,32 @@ New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 try {
   $archivePath = Join-Path $tempDir $asset.name
   Invoke-WebRequest -Headers @{"User-Agent" = "sis-install"} -Uri $asset.browser_download_url -OutFile $archivePath
+  # Verify against the release's SHA256SUMS BEFORE extracting. Fail closed: a missing manifest,
+  # a missing entry or a mismatch aborts with nothing installed. This catches corruption and
+  # tampering with a mirror or download path; it does not defend against a compromised
+  # release, because SHA256SUMS comes from the same release.
+  $sumsAsset = $release.assets | Where-Object { $_.name -eq "SHA256SUMS" } | Select-Object -First 1
+  if (-not $sumsAsset) {
+    throw "SHA256SUMS is not published with release $($release.tag_name); refusing to install an unverified archive."
+  }
+  $sumsPath = Join-Path $tempDir "SHA256SUMS"
+  Invoke-WebRequest -Headers @{"User-Agent" = "sis-install"} -Uri $sumsAsset.browser_download_url -OutFile $sumsPath
+  $expected = $null
+  foreach ($line in Get-Content -LiteralPath $sumsPath) {
+    $parts = $line.Trim() -split '\s+', 2
+    if ($parts.Count -eq 2 -and $parts[1].TrimStart('*') -eq $asset.name) {
+      $expected = $parts[0]
+      break
+    }
+  }
+  if (-not $expected) {
+    throw "SHA256SUMS has no entry for $($asset.name); refusing to install an unverified archive."
+  }
+  $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash
+  if ($actual -ne $expected) {
+    throw "Checksum mismatch for $($asset.name): expected $expected, got $actual. Nothing was installed."
+  }
+  Write-Host "Verified $($asset.name) against SHA256SUMS"
   Expand-Archive -Path $archivePath -DestinationPath $tempDir -Force
   New-Item -ItemType Directory -Force -Path $installDir | Out-Null
   Copy-Item (Join-Path $tempDir "sis.exe") (Join-Path $installDir "sis.exe") -Force

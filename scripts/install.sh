@@ -130,6 +130,54 @@ else
   curl -fsSL -H "User-Agent: sis-install" -o "$archive" "$url"
 fi
 
+# Verify the archive against the release's SHA256SUMS BEFORE extracting anything. Fail closed:
+# a missing manifest, a missing entry, a mismatch, or no hashing tool all abort with nothing
+# installed. This catches corruption and tampering with a mirror or download path; it does not
+# defend against a compromised release, because SHA256SUMS comes from the same release.
+if command -v sha256sum >/dev/null 2>&1; then
+  hash_cmd="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  hash_cmd="shasum -a 256"
+else
+  echo "Error: cannot verify the download: neither sha256sum nor shasum is installed." >&2
+  echo "Install one of them (coreutils provides sha256sum; perl provides shasum) and re-run." >&2
+  exit 1
+fi
+
+if [ -n "${SIS_TEST_ARCHIVE:-}" ]; then
+  # Testing only: SIS_TEST_SUMS is a local SHA256SUMS file. Unset means "no manifest".
+  archive_name="$(basename "$archive")"
+  sums_file="${SIS_TEST_SUMS:-$tmpdir/SHA256SUMS.absent}"
+  if [ ! -f "$sums_file" ]; then
+    echo "Error: SHA256SUMS not found; refusing to install an unverified archive." >&2
+    exit 1
+  fi
+else
+  archive_name="$asset_name"
+  sums_file="$tmpdir/SHA256SUMS"
+  sums_url="${url%/*}/SHA256SUMS"
+  if ! curl -fsSL -H "User-Agent: sis-install" -o "$sums_file" "$sums_url"; then
+    echo "Error: could not download SHA256SUMS from $sums_url; refusing to install an unverified archive." >&2
+    exit 1
+  fi
+fi
+
+expected="$(awk -v n="$archive_name" '{ f = $2; sub(/^\*/, "", f); if (f == n) { print $1; exit } }' "$sums_file")"
+if [ -z "$expected" ]; then
+  echo "Error: SHA256SUMS has no entry for $archive_name; refusing to install an unverified archive." >&2
+  exit 1
+fi
+# shellcheck disable=SC2086 # $hash_cmd is deliberately split ("shasum -a 256")
+actual="$($hash_cmd "$archive" | awk '{ print $1 }')"
+if [ "$actual" != "$expected" ]; then
+  echo "Error: checksum mismatch for $archive_name" >&2
+  echo "  expected: $expected" >&2
+  echo "  actual:   $actual" >&2
+  echo "Nothing was installed." >&2
+  exit 1
+fi
+echo "Verified $archive_name against SHA256SUMS"
+
 tar -C "$tmpdir" -xzf "$archive"
 
 # INSTALL_DIR is already resolved at the top (SIS_INSTALL_DIR or ~/.local/bin).
