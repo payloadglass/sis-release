@@ -209,18 +209,22 @@ them. The same detectors apply to a nested payload as to a top-level file.
 | Flash / media | `.swf`, media streams | `swf:*` |
 
 Cross-format and structural findings (polyglots, magic-byte conflicts, format
-masquerade) surface under `file:*`; Unicode and homoglyph indicators under
-`unicode:*`.
+masquerade) surface under `file:*`; selected Unicode indicators (bidi, invisible
+characters, mixed-script identifiers) under `unicode:*`. Punycode decoding and
+whole-script lookalikes are not yet covered; see the known limitations.
 
-60+ detectors across ~25 analysis families declare **800+ distinct finding kinds**
-across format and container structure, PDF internals, actions and triggers, scripting
-(JavaScript, VBA/VBScript, PowerShell, shell, Python — static plus an
-instrumented dynamic sandbox), Office macros and OLE, forms and XML,
+<!-- revisit at beta.2 tag: Unicode/lookalike scope depends on #2070 (IDN/punycode) and the filename name-claim parity PR -->
+
+Detectors cover format and container structure, PDF internals, actions and
+triggers, scripting (JavaScript, VBA/VBScript, PowerShell, shell, Python — static
+plus an instrumented dynamic sandbox), Office macros and OLE, forms and XML,
 embedded/nested files, streams and filters, fonts, images, QR and visual lures,
 rich media, URIs and phishing, the passive render pipeline, crypto and
 signatures, AI-poisoning / prompt-injection channels, and — verdict-inert and
 evidence-safe — **secrets and PII**. Findings are correlated into
 trigger/action/payload chains and composite scores that span format boundaries.
+The current set is code-owned and changes between releases; `sis inventory` and
+`sis contract` list it.
 
 ## How risk is read
 
