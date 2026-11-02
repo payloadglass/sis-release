@@ -1,10 +1,10 @@
 # PayloadGlass CLI (`sis`)
 
-**A complete, local scanner for hostile documents, archives, files, and AI-bound content.**
+**A local scanner for hostile documents, archives, files, and AI-bound content.**
 
 PayloadGlass CLI — the `sis` command — identifies malicious constructs across
 document, container, and executable formats, with native analysis per format
-family and full traversal of arbitrarily nested content. It produces grouped
+family and budget-bounded recursive traversal of nested content. It produces grouped
 findings with evidence spans, an inspectable asset graph, and machine-readable
 output — and it runs entirely on your machine. No account, no upload.
 
@@ -151,25 +151,25 @@ sis scan lure.docx
 sis scan dropper.lnk
 
 # Deep analysis with machine-readable output
-sis scan sample.pdf --deep --json
+sis scan sample.pdf --deep --format json
 
 # Batch-scan a mixed-format directory, one JSON object per finding
-sis scan --path attachments/ --deep --jsonl-findings
+sis scan attachments/ --deep --format jsonl-findings
 
 # SARIF for code-scanning pipelines
-sis scan sample.pdf --deep --sarif-out report.sarif
+sis scan sample.pdf --deep --format json --emit sarif=report.sarif
 
-# Classify AI-ingestion risk of a document (exit code = label)
+# Report observed AI-ingestion risk of a document (exit code = label)
 sis assess sample.pdf --for ai-ingest --json
 
-# Sanitise active content and prove what changed
-sis sanitize sample.pdf --out clean.pdf --report-json report.json
+# Sanitise active content (preview; selected formats only)
+sis sanitize apply sample.pdf --out clean.pdf --report-json report.json --verify-rescan
 
 # Generate a markdown report
 sis report sample.pdf --deep -o report.md
 
 # Interactive forensic REPL — parse once, query many
-sis repl sample.pdf
+sis query repl sample.pdf
 > findings.high
 > actions.chains
 > stream 8 0 --decode
@@ -178,8 +178,9 @@ sis repl sample.pdf
 ## What it analyses
 
 Format is identified from content, not extension. Nested content of any
-supported type is detected and analysed inline — there is no distinction between
-a top-level file and a nested payload.
+supported type is detected and analysed inline, under explicit depth and size
+budgets; omissions are recorded in `analysis_coverage` where the format reports
+them. The same detectors apply to a nested payload as to a top-level file.
 
 | Format | Extensions | Detector namespace |
 | --- | --- | --- |
@@ -221,51 +222,48 @@ signatures, AI-poisoning / prompt-injection channels, and — verdict-inert and
 evidence-safe — **secrets and PII**. Findings are correlated into
 trigger/action/payload chains and composite scores that span format boundaries.
 
-## The five risk axes
+## How risk is read
 
-A file is not one number. Every artefact is read on five orthogonal axes:
+A file is not one number, and risk depends on who ingests the content.
+
+**Threat assessment.** The security verdict is the worst of three readings:
 **hostility** (executes, exploits, fetches, evades), **deception** (manipulates a
-human), **AI-ingestion** (corrupts a model/RAG/agent workflow), **sensitivity**
-(exposure, indexing, retention, sharing would cause harm), and **provenance**
-(origin and custody). The security verdict is produced over hostility and
-deception evidence only — sensitivity, provenance, and AI-ingestion never feed
-the threat score.
+human) and **AI-ingestion** (corrupts a model/RAG/agent workflow). Findings carry
+evidence spans, and the report records what the analysis could not inspect.
 
-## The five risk lenses
+**Decision context.** Other evidence informs a decision without changing the
+verdict: sensitive data (secrets, credentials, PII — detected locally,
+evidence-safe and verdict-inert) and provenance or custody. Provenance reads
+`Unknown` on a bare scan, because the file alone does not say where it came from.
 
-Every file is read for five consumers, because risk depends on who ingests it:
-
-- **Human-open** — risk if a person opens it in a normal application.
-- **Renderer** — risk to an automated parser or rendering pipeline.
-- **AI-ingestion** — hidden or retrieval-only channels carrying instructions to a model.
-- **Agent-action** — content that an autonomous tool might act on (links, embedded commands).
-- **CDR-residual** — what risk would remain after a safe derivative is produced.
+This is not a fixed list of universal risk axes, and consumer- and
+destination-specific decisions (open, index, forward, hand to an agent) are
+planned, not shipped. Today `sis assess` reports AI-ingestion risk for one
+consumer.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `sis scan` | Primary detector pipeline for one file or a batch of paths |
-| `sis query` | Forensic query interface over a parsed file (incl. asset-path queries) |
-| `sis repl` | Interactive query REPL — parse once, query many |
-| `sis report` | Full report generation (markdown / JSON / YAML) |
-| `sis explain` | Detailed explanation for a specific finding ID |
-| `sis extract` | Hostile-aware, provenanced text extraction (safe text for RAG/search) |
-| `sis assess` | Classify a document's AI-ingestion risk (`--for ai-ingest`); the default exit code encodes the label (0 none, 5 indeterminate, 10 instruction-bearing, 20 hidden instruction, 30 poisoning likely) |
-| `sis sanitize` | CDR strip-and-report for active-content removal |
-| `sis verify-cdr` | Verify-rescan a sanitised derivative and report residual risk |
-| `sis cdr-gateway` | Batch CDR with release decisions and evidence reports |
-| `sis flow` | Typed capability orchestration — lint, simulate, run, explain-run |
-| `sis policy` | Policy bundle inspection and evaluation |
-| `sis shape` | Structural campaign hunting — group by structure, not hash |
-| `sis sandbox` | Dynamic sandbox evaluation for extracted dynamic assets |
-| `sis correlate` | Cross-input correlation of findings, chains, and IOCs |
-| `sis generate` | YARA rule generation and test-fixture mutation |
-| `sis diff` | Diff two scan outputs for finding- or verdict-level drift |
-| `sis watch` | Watch a directory and scan files as they arrive |
-| `sis docs` | Print bundled documentation |
+| `sis scan` | Analyse a file or directory; use `--stream` for chunked analysis |
+| `sis query` | Live or saved-report projections; PDF session with `sis query repl` |
+| `sis explain` | Explain verdicts, findings, claims, integrity, routing, members and effects |
+| `sis report` | Reanalyse for an operator-facing report |
+| `sis assess` | Bounded AI-ingestion risk and consumer-policy guidance (`--for ai-ingest`) |
+| `sis extract` | Channel-aware text and disclosed removal derivatives |
+| `sis sanitize` | Preview: `plan` and `apply` for selected formats; isolated `release` needs a worker the v0.7.0-beta.1 build does not ship; `verify` checks evidence. See the known limitations |
+| `sis sandbox` | Explicit dynamic evaluation of supported assets |
+| `sis corpus` | Structure clustering and saved-report correlation/comparison |
+| `sis workflow` | Typed workflow composition and bundle validation |
+| `sis docs` | Bundled guidance; start with `sis docs index` or `sis docs scan` |
+| `sis doctor` | Build, provider and configuration diagnostics |
+| `sis completion` | Completion for the installed command surface |
 | `sis config` | Configuration initialisation and validation |
-| `sis update` | Self-update from GitHub releases |
+| `sis update` | Self-update from published releases (`--include-prerelease` for betas) |
+| `sis pdf-object` | Preview, v0.7.0 betas only: raw or decoded access to one PDF object by number |
+| `sis pdf-export` | Preview, v0.7.0 betas only: whole-document PDF shapes (structure, IR, content graphs) |
+
+<!-- revisit at beta.2 tag: regenerate this table from sis README.md at the tag; HTML/SVG sanitisation status depends on #2066 -->
 
 Run `sis --help` for the full command surface.
 
@@ -311,7 +309,7 @@ sis update --include-prerelease
 ## About PayloadGlass
 
 PayloadGlass is a local-first trust layer for hostile documents, archives,
-files, and AI-bound content. The CLI is the complete local scanner; see
+files, and AI-bound content. The CLI is the local scanner; see
 **[payloadglass.com](https://payloadglass.com)** for the whole picture and the
 **[investigation workbench](https://workbench.payloadglass.com)**, where you can drop a
 hostile file and watch it get analysed with zero bytes uploaded.
